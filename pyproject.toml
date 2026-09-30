@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Task worktrees across git repos"
 readme = "README.md"
 license = "MIT"
-authors = [{name = "Rhythm", email = "rhythm.e@nsbh.co"}]
+authors = [{name = "Ehsanur Rahman Rhythm", email = "errhythm.me@gmail.com"}]
 keywords = ["git", "worktree", "cli", "monorepo", "tasks"]
 classifiers = [
     "Development Status :: 4 - Beta",
