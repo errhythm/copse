@@ -6,7 +6,7 @@ Task worktrees across git repos. Run it in a folder containing repos (1-2 levels
 
 ## Why copse
 
-It was called `twt` for about a day, and I didn't like it. A copse is a small group of trees, which is what a task is here: a handful of worktrees standing together in one folder, one per repo. I nearly went with grove, but that name's taken on PyPI, and Canopy already exists as a tool that does something close to this. Copse was free everywhere I checked.
+It was called `twt` for about a day, and I didn't like it. A copse is a small group of trees, which is what a task is here: a handful of worktrees standing together in one folder, one per repo.
 
 ## Install
 
