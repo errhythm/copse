@@ -1,14 +1,17 @@
 """copse: task worktrees across git repos."""
+import functools
 import json
 import os
 import subprocess
 import sys
+import time
+import urllib.request
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError, distribution, version as _pkg_version
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -21,13 +24,15 @@ for _s in (sys.stdout, sys.stderr):  # a cp1252 pipe (Windows CI, redirects) mus
 app = typer.Typer(add_completion=False, no_args_is_help=True, help=__doc__)
 
 
+try:
+    __version__ = _pkg_version("copse")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
+
 def _version(v: bool):
     if v:
-        try:
-            ver = _pkg_version("copse")
-        except PackageNotFoundError:
-            ver = "unknown"
-        typer.echo(f"copse {ver}")
+        typer.echo(f"copse {__version__}")
         raise typer.Exit()
 
 
@@ -223,7 +228,166 @@ def confirm_plan(plan, found, remote, from_):
         raise typer.Exit(2)  # No or Ctrl-C (None): nothing created
 
 
+# adapted from errhythm/ccswap (MIT): install-method detection, 24h PyPI cache, daily notice, self-upgrade
+PYPI_URL = "https://pypi.org/pypi/copse/json"
+CACHE_TTL = 24 * 3600
+
+
+def _cache_path():
+    if os.environ.get("XDG_CACHE_HOME"):
+        base = Path(os.environ["XDG_CACHE_HOME"])
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        base = Path.home() / ".cache"
+    return base / "copse" / "update_check.json"
+
+
+def _parse_version(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def _editable():
+    try:
+        return json.loads(distribution("copse").read_text("direct_url.json") or "{}")["dir_info"].get("editable", False)
+    except Exception:
+        return False
+
+
+def _detect_install_method():
+    """'uv', 'pipx', or None when we can't tell. An editable install is None: `uv tool upgrade` on it is a no-op."""
+    if _editable():
+        return None
+    prefix = Path(sys.prefix)
+    parts = tuple(p.lower() for p in prefix.parts)
+    pairs = list(zip(parts, parts[1:]))
+    if ("uv", "tools") in pairs:
+        return "uv"
+    if ("pipx", "venvs") in pairs:
+        return "pipx"
+    for env_var, name in (("UV_TOOL_DIR", "uv"), ("PIPX_HOME", "pipx")):  # override: trusted only if sys.prefix is under it
+        root = os.environ.get(env_var)
+        if root:
+            try:
+                if prefix.is_relative_to(Path(root)):
+                    return name
+            except (ValueError, OSError):
+                pass
+    return None
+
+
+def _interactive():
+    return sys.stdout.isatty() and sys.stderr.isatty()
+
+
+def _latest_version():
+    path = _cache_path()
+    try:
+        c = json.loads(path.read_text())
+        if 0 <= time.time() - c["ts"] < CACHE_TTL:  # a future ts (clock skew) must not pin the cache forever
+            return c["version"]
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(urllib.request.Request(PYPI_URL), timeout=2) as resp:
+            latest = json.loads(resp.read().decode())["info"]["version"]
+    except Exception:
+        latest = None
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:  # cache failures too, so an offline box pays the 2s once a day; atomic so two copse runs never read a torn file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"ts": time.time(), "version": latest}))
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)  # os.replace can fail on Windows while another copse reads the file
+        except Exception:
+            pass
+    return latest
+
+
+def update_notice(current=None):
+    """The one-line notice when PyPI has a newer copse, else None. Never raises."""
+    try:
+        current = current or __version__
+        latest = _latest_version()
+        if not latest or _parse_version(latest) <= _parse_version(current):
+            return None
+        direct = {"uv": "uv tool upgrade copse", "pipx": "pipx upgrade copse"}.get(_detect_install_method() or "")
+        if direct and sys.platform == "win32":  # `copse update` only prints there, so name the real command
+            hint = f"Run `{direct}`."
+        elif direct:
+            hint = "Run `copse update`."
+        else:
+            hint = "Run `copse update` for upgrade instructions."
+        return f"copse {latest} is available (you have {current}). {hint}"
+    except Exception:
+        return None
+
+
+def maybe_notice(json_=False):
+    """Print the notice to stderr. Silent for --json, non-TTY streams and COPSE_NO_UPDATE_CHECK=1: agents never see it or pay for the fetch."""
+    try:
+        if json_ or os.environ.get("COPSE_NO_UPDATE_CHECK") == "1" or not _interactive():
+            return
+        msg = update_notice()
+        if msg:
+            err.print(msg, style="dim", markup=False, soft_wrap=True)  # one line, never wrapped at the terminal width
+    except Exception:
+        pass
+
+
+def notifies(fn):
+    """Run the update notice after a human-output command finishes (exit 0 or 1, not a usage error)."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            fn(*a, **kw)
+        except typer.Exit as e:
+            if e.exit_code != 2:
+                maybe_notice(kw.get("json_", False))
+            raise
+        maybe_notice(kw.get("json_", False))
+    return wrapper
+
+
+def run_self_upgrade():
+    method = _detect_install_method()
+    cmd = {"uv": ["uv", "tool", "upgrade", "copse"], "pipx": ["pipx", "upgrade", "copse"]}.get(method or "")
+    if cmd is None:
+        err.print("error: could not detect the install method (looked for a uv tool / pipx venv).\n"
+                  f"  sys.prefix:     {sys.prefix}\n  sys.executable: {sys.executable}\n"
+                  "Upgrade manually with one of:\n  uv tool upgrade copse\n  pipx upgrade copse\n"
+                  f"  {sys.executable} -m pip install --upgrade copse\n"
+                  "For an editable install (`-e .`), run `git pull` in the clone.", style="red", markup=False)
+        return 1
+    if sys.platform == "win32":  # the running copse.exe is locked, so an in-process upgrade fails to replace it
+        out.print(f"To upgrade copse on Windows, run:\n  {' '.join(cmd)}", markup=False)
+        return 1
+    try:
+        rc = subprocess.run(cmd, check=False).returncode
+    except FileNotFoundError:
+        err.print(f"error: detected a {method} install but `{cmd[0]}` is not on PATH. Run the upgrade from a shell where it is.", style="red", markup=False)
+        return 1
+    if rc == 0:
+        try:
+            subprocess.run([sys.executable, "-m", "copse", "--version"], check=False)  # fresh process from this install, not whatever `copse` is first on PATH
+        except OSError:
+            pass
+    return rc
+
+
 @app.command()
+def update():
+    """Upgrade copse to the latest release."""
+    raise typer.Exit(run_self_upgrade())
+
+
+app.command("upgrade", hidden=True)(update)
+
+
+@app.command()
+@notifies
 def repos(json_: Json = False):
     """List detected repos."""
     found = scan(Path.cwd(), task_root(None))
@@ -240,6 +404,7 @@ def repos(json_: Json = False):
 
 
 @app.command()
+@notifies
 def new(task: Task, repo: Repos = None, branch: Annotated[Optional[str], typer.Option("-b", "--branch", help="Branch for every repo without its own; default: task name")] = None,
         base: Annotated[Optional[str], typer.Option("--base", help="Base for new branches; default: <remote>/HEAD, else current branch")] = None,
         from_: Annotated[str, typer.Option("--from", help="Start new branches from remote|local base")] = "remote",
@@ -309,6 +474,7 @@ def info(d, main, rid):
 
 
 @app.command()
+@notifies
 def ls(task: Optional[str] = typer.Argument(None), root: Root = None, json_: Json = False):
     """Show worktrees per task: branch, dirty, ahead/behind."""
     troot = task_root(root)
@@ -332,6 +498,7 @@ def ls(task: Optional[str] = typer.Argument(None), root: Root = None, json_: Jso
 
 
 @app.command()
+@notifies
 def rm(task: Task, repo: RmRepos = None,
        force: Annotated[bool, typer.Option("--force", help="Remove even with uncommitted changes")] = False,
        delete_branch: Annotated[bool, typer.Option("--delete-branch", help="Also delete the task branch")] = False,

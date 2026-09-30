@@ -1,6 +1,6 @@
 [project]
 name = "copse"
-version = "0.3.0"
+version = "0.4.0"
 description = "Task worktrees across git repos"
 readme = "README.md"
 license = "MIT"

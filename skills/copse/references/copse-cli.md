@@ -19,6 +19,14 @@ Errors go to stderr as `error: ...`. `--json` output goes to stdout as plain JSO
 | `--version` | Print the version. |
 | `--help` | Help for copse or any command. |
 
+## copse update
+
+Upgrade copse. Runs `uv tool upgrade copse` or `pipx upgrade copse`, picked from where copse is installed, and exits with that command's code. On success it then prints `copse --version`. `copse upgrade` is a hidden alias.
+
+Exit 1 when the install method is unknown (it prints manual steps), when `uv` or `pipx` is not on PATH, and always on Windows, where it prints the command instead of running it.
+
+Environment: `COPSE_NO_UPDATE_CHECK=1` turns off the daily update notice. The notice is one dim line on stderr after `repos`, `new`, `ls` and `rm`. It never appears with `--json` or when stdout or stderr is not a TTY, so scripts and agents never see it.
+
 ## copse repos
 
 List detected repos.

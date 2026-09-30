@@ -1,14 +1,24 @@
 import json
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import copse
 from copse import app
 
 ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
        "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "init.defaultBranch", "GIT_CONFIG_VALUE_0": "main"}
+
+
+@pytest.fixture(autouse=True)
+def no_update_check(monkeypatch, tmp_path):  # the suite must never reach PyPI or write the real ~/.cache
+    monkeypatch.setenv("COPSE_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(copse.urllib.request, "urlopen", lambda *a, **k: pytest.fail("PyPI call in tests"))
 
 
 def sh(*a, cwd):
@@ -399,3 +409,209 @@ def test_attached_branch_config_untouched(ws):
     sh("git", "branch", "mine", cwd=ws / "api")
     js("new", "1", "-r", "api:mine")
     assert cfg(ws / "api", "branch.mine.merge") == "" and cfg(ws / "api", "branch.mine.remote") == ""
+
+
+# ---- self-update ----
+
+@pytest.fixture
+def upd(tmp_path, monkeypatch):
+    """Update-check sandbox: temp cache, fake TTY, stubbed PyPI. Returns a dict with the PyPI version and call count."""
+    st = {"latest": "9.9.9", "calls": 0}
+    monkeypatch.delenv("COPSE_NO_UPDATE_CHECK")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(copse, "__version__", "0.4.0")
+    monkeypatch.setattr(copse, "_interactive", lambda: True)
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: "uv")
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def read(self): return json.dumps({"info": {"version": st["latest"]}}).encode()
+
+    def fake_urlopen(req, timeout=None):
+        st["calls"] += 1
+        assert timeout == 2
+        if st["latest"] is None:
+            raise OSError("offline")
+        return Resp()
+
+    monkeypatch.setattr(copse.urllib.request, "urlopen", fake_urlopen)
+    return st
+
+
+def set_prefix(monkeypatch, prefix):
+    monkeypatch.setattr(sys, "prefix", prefix)
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.delenv("PIPX_HOME", raising=False)
+
+
+def test_detect_uv_pipx_unknown(monkeypatch):
+    monkeypatch.setattr(copse, "_editable", lambda: False)
+    set_prefix(monkeypatch, "/home/u/.local/share/uv/tools/copse")
+    assert copse._detect_install_method() == "uv"
+    set_prefix(monkeypatch, "/home/u/.local/pipx/venvs/copse")
+    assert copse._detect_install_method() == "pipx"
+    set_prefix(monkeypatch, "/home/u/proj/.venv")
+    assert copse._detect_install_method() is None
+    monkeypatch.setenv("UV_TOOL_DIR", "/opt/tools")
+    monkeypatch.setattr(sys, "prefix", "/opt/tools/copse")
+    assert copse._detect_install_method() == "uv"
+    monkeypatch.delenv("UV_TOOL_DIR")
+    monkeypatch.setenv("PIPX_HOME", "/opt/pipx")
+    monkeypatch.setattr(sys, "prefix", "/opt/pipx/venvs/x")
+    assert copse._detect_install_method() == "pipx"
+    monkeypatch.setattr(sys, "prefix", "/elsewhere")
+    assert copse._detect_install_method() is None
+
+
+@pytest.mark.parametrize("method,cmd", [("uv", ["uv", "tool", "upgrade", "copse"]), ("pipx", ["pipx", "upgrade", "copse"])])
+def test_update_runs_cmd_and_returns_rc(monkeypatch, method, cmd):
+    calls = []
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: method)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(copse.subprocess, "run", lambda c, **kw: calls.append(c) or subprocess.CompletedProcess(c, 3))
+    r = run("update")
+    assert r.exit_code == 3
+    assert calls == [cmd]  # rc != 0: no --version follow-up
+
+
+def test_update_success_prints_new_version_and_upgrade_alias(monkeypatch):
+    calls = []
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: "uv")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(copse.subprocess, "run", lambda c, **kw: calls.append(c) or subprocess.CompletedProcess(c, 0))
+    assert run("upgrade").exit_code == 0
+    assert calls == [["uv", "tool", "upgrade", "copse"], [sys.executable, "-m", "copse", "--version"]]  # not a PATH lookup
+    assert "upgrade" not in run("--help").stdout
+
+
+def test_update_windows_prints_only(monkeypatch):
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: "pipx")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(copse.subprocess, "run", lambda *a, **k: pytest.fail("must not run"))
+    r = run("update")
+    assert r.exit_code == 1
+    assert "pipx upgrade copse" in r.output
+
+
+def test_update_unknown_method(monkeypatch):
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: None)
+    monkeypatch.setattr(copse.subprocess, "run", lambda *a, **k: pytest.fail("must not run"))
+    r = run("update")
+    assert r.exit_code == 1
+    for s in ("uv tool upgrade copse", "pipx upgrade copse", "pip install --upgrade copse", "git pull"):
+        assert s in r.output
+
+
+def test_update_tool_not_on_path(monkeypatch):
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: "uv")
+    monkeypatch.setattr(sys, "platform", "linux")
+    def boom(*a, **k): raise FileNotFoundError
+    monkeypatch.setattr(copse.subprocess, "run", boom)
+    r = run("update")
+    assert r.exit_code == 1 and "not on PATH" in r.output
+
+
+def test_notice_shown_when_newer_on_tty(upd, ws):
+    r = run("repos")
+    assert r.exit_code == 0
+    assert "copse 9.9.9 is available (you have 0.4.0). Run `copse update`." in r.stderr
+
+
+def test_notice_hints(upd, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert "Run `uv tool upgrade copse`." in copse.update_notice()
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(copse, "_detect_install_method", lambda: None)
+    assert "for upgrade instructions" in copse.update_notice()
+
+
+def test_no_notice_json_nontty_env(upd, ws, monkeypatch):
+    assert run("repos", "--json").stderr == ""
+    monkeypatch.setattr(copse, "_interactive", lambda: False)
+    assert "available" not in run("repos").stderr
+    monkeypatch.setattr(copse, "_interactive", lambda: True)
+    monkeypatch.setenv("COPSE_NO_UPDATE_CHECK", "1")
+    assert "available" not in run("repos").stderr
+    assert upd["calls"] == 0  # none of those paid for the network call
+
+
+@pytest.mark.parametrize("latest", ["0.4.0", "0.3.9", "0.4"])
+def test_no_notice_equal_or_older(upd, latest):
+    upd["latest"] = latest
+    assert copse.update_notice() is None
+
+
+def test_cache_honoured_within_24h_then_ignored(upd, monkeypatch):
+    assert copse.update_notice() and upd["calls"] == 1
+    assert copse.update_notice() and upd["calls"] == 1  # served from cache
+    p = copse._cache_path()
+    assert p.parent.name == "copse" and json.loads(p.read_text())["version"] == "9.9.9"
+    monkeypatch.setattr(copse.time, "time", lambda: time.time() + 25 * 3600)
+    copse.update_notice()
+    assert upd["calls"] == 2
+
+
+def test_network_error_no_notice_no_crash(upd, ws):
+    upd["latest"] = None
+    r = run("repos")
+    assert r.exit_code == 0 and "available" not in r.stderr
+
+
+@pytest.mark.parametrize("bad", ["garbage", "1.x.0", "", "1..2", "9.9.9rc1", "9.9.9.dev0"])
+def test_garbage_version_no_crash(upd, bad):
+    upd["latest"] = bad
+    assert copse.update_notice() is None
+    upd["latest"] = "9.9.9"
+    assert copse.update_notice("not-a-version") is None
+    assert copse.update_notice("0.4.0.dev0") is None
+
+
+def test_editable_install_is_unknown_method(monkeypatch):  # `uv tool upgrade` on `uv tool install -e .` is "Nothing to upgrade"
+    set_prefix(monkeypatch, "/home/u/.local/share/uv/tools/copse")
+    monkeypatch.setattr(copse, "_editable", lambda: True)
+    assert copse._detect_install_method() is None
+    monkeypatch.setattr(copse, "_editable", lambda: False)
+    assert copse._detect_install_method() == "uv"
+
+
+@pytest.mark.parametrize("body", ["{not json", "[]", '{"ts": "x", "version": "9.9.9"}', '{"version": "9.9.9"}'])
+def test_corrupt_cache_refetches(upd, body):
+    p = copse._cache_path()
+    p.parent.mkdir(parents=True)
+    p.write_text(body)
+    assert copse.update_notice() and upd["calls"] == 1
+    assert json.loads(p.read_text())["version"] == "9.9.9"
+
+
+def test_future_cache_ts_is_stale(upd):
+    p = copse._cache_path()
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"ts": time.time() + 10 * 365 * 86400, "version": "0.1.0"}))
+    assert copse.update_notice() and upd["calls"] == 1
+
+
+def test_unwritable_cache_no_crash_no_tmp_left(upd, monkeypatch):
+    def deny(*a): raise PermissionError
+    monkeypatch.setattr(copse.os, "replace", deny)
+    assert copse.update_notice() and upd["calls"] == 1
+    assert list(copse._cache_path().parent.iterdir()) == []
+    monkeypatch.setenv("XDG_CACHE_HOME", "/dev/null/nope")  # mkdir fails
+    assert copse.update_notice()
+
+
+def test_notice_is_one_line_on_narrow_terminal(upd, monkeypatch, capsys):
+    monkeypatch.setattr(copse, "err", copse.Console(stderr=True, width=30))
+    copse.maybe_notice()
+    assert capsys.readouterr().err.count("\n") == 1
+
+
+@pytest.mark.parametrize("code,shown", [(0, True), (1, True), (2, False)])
+def test_notifies_keeps_exit_code(upd, code, shown, capsys):
+    @copse.notifies
+    def cmd(json_=False):
+        raise copse.typer.Exit(code)
+    with pytest.raises(copse.typer.Exit) as e:
+        cmd(json_=False)
+    assert e.value.exit_code == code and ("available" in capsys.readouterr().err) == shown

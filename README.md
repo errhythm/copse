@@ -46,6 +46,8 @@ copse rm 200 --delete-branch   # clean up when the task is done
 
 Run `copse new 200` on a terminal with no `-r` to pick repos interactively.
 
+To upgrade, run `copse update` (it calls `uv tool upgrade copse` or `pipx upgrade copse`). On a terminal, copse checks PyPI once a day and prints a one-line notice on stderr when a newer version exists. Set `COPSE_NO_UPDATE_CHECK=1` to turn that off. It never runs with `--json` or when output is piped.
+
 ## Layout
 
 ```text
@@ -70,6 +72,7 @@ Worktrees go in `./tasks/<task>/`. Change that with `--root` or the `COPSE_ROOT`
 | `copse new TASK` | Create one worktree per repo under the task folder. |
 | `copse ls [TASK]` | Show worktrees per task: branch, dirty, ahead/behind. |
 | `copse rm TASK` | Remove a task's worktrees, all or only the `-r` repos. |
+| `copse update` | Upgrade copse with uv or pipx. On Windows it prints the command instead. |
 
 `copse new` options:
 

@@ -19,7 +19,7 @@ def git(*args, cwd, out=False):
 
 def copse(cwd, *args, env=None, stdin=""):
     base = {k: v for k, v in os.environ.items() if k != "COPSE_ROOT"}
-    e = {**base, **GIT_ENV, "PYTHONPATH": str(HERE), "NO_COLOR": "1", **(env or {})}
+    e = {**base, **GIT_ENV, "PYTHONPATH": str(HERE), "NO_COLOR": "1", "COPSE_NO_UPDATE_CHECK": "1", **(env or {})}
     return subprocess.run([sys.executable, "-m", "copse", *args], cwd=cwd, input=stdin, capture_output=True, text=True, env=e)
 
 

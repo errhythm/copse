@@ -26,6 +26,8 @@ Every flag, JSON shape and exit code is in `references/copse-cli.md`. Open it be
 copse --version || uv tool install copse
 ```
 
+To upgrade, a human runs `copse update`. Agents do not need to: the daily update notice only prints on an interactive terminal, never with `--json` or piped output, so you will not see it and it costs you no network call.
+
 ## Rules for agents
 
 1. Always pass `-r` and `--json`. Without `-r` and without a TTY, `copse new` exits 2 and creates nothing. Never run bare `copse new TASK`.
