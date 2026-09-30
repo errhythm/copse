@@ -135,6 +135,14 @@ copse new 200 -r api -r web:feat/200:develop --json | jq '.results[] | {repo,sta
 
 `copse rm 200 --delete-branch` removes the worktrees, then deletes each branch only if copse created it for that task. Branches copse created carry a `branch.<name>.copseTask` git config entry. Branches you attached are kept and reported as `branch_kept` in JSON. Deletion uses `git branch -d`, so a branch with unmerged commits survives unless you add `--force`, which also forces worktree removal and uses `-D`.
 
+## Agent skill
+
+```bash
+npx skills add errhythm/copse
+```
+
+Teaches coding agents to drive copse safely: always `-r` and `--json`, dry-run first, read exit codes, and remove branches only when copse created them.
+
 ## Why copse
 
 It was called `twt` for about a day, and I didn't like it. A copse is a small group of trees, which is what a task is here: a handful of worktrees standing together in one folder, one per repo.

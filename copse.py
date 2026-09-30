@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -18,9 +19,28 @@ for _s in (sys.stdout, sys.stderr):  # a cp1252 pipe (Windows CI, redirects) mus
         _s.reconfigure(errors="replace")
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help=__doc__)
+
+
+def _version(v: bool):
+    if v:
+        try:
+            ver = _pkg_version("copse")
+        except PackageNotFoundError:
+            ver = "unknown"
+        typer.echo(f"copse {ver}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(version: Annotated[bool, typer.Option("--version", callback=_version, is_eager=True, help="Show version and exit")] = False):
+    pass
+
+
 Root = Annotated[Optional[Path], typer.Option("--root", envvar="COPSE_ROOT", help="Task root (default ./tasks)")]
 Json = Annotated[bool, typer.Option("--json", help="Machine-readable output")]
+Task = Annotated[str, typer.Argument(metavar="TASK", help="Task name, e.g. an issue number; becomes the folder name")]
 Repos = Annotated[Optional[list[str]], typer.Option("-r", "--repo", help="repo[:branch[:base]] (repeatable)")]
+RmRepos = Annotated[Optional[list[str]], typer.Option("-r", "--repo", help="Repo id or folder name (repeatable)")]
 
 
 def git(*args, cwd=None):
@@ -59,7 +79,7 @@ def scan(base: Path, skip: Path):
     return found
 
 
-out, err = Console(highlight=False), Console(stderr=True, highlight=False)  # no force_terminal: rich drops ANSI when piped / NO_COLOR
+out, err = Console(highlight=False, emoji=False), Console(stderr=True, highlight=False, emoji=False)  # no force_terminal: rich drops ANSI when piped / NO_COLOR
 MARK = {"created": ("✔", "green"), "removed": ("✔", "green"), "exists": ("•", "dim"), "planned": ("○", "cyan"), "failed": ("✖", "red")}
 
 
@@ -216,10 +236,12 @@ def repos(json_: Json = False):
 
 
 @app.command()
-def new(task: str, repo: Repos = None, branch: Annotated[Optional[str], typer.Option("-b", "--branch")] = None,
-        base: Annotated[Optional[str], typer.Option("--base")] = None,
+def new(task: Task, repo: Repos = None, branch: Annotated[Optional[str], typer.Option("-b", "--branch", help="Branch for every repo without its own; default: task name")] = None,
+        base: Annotated[Optional[str], typer.Option("--base", help="Base for new branches; default: <remote>/HEAD, else current branch")] = None,
         from_: Annotated[str, typer.Option("--from", help="Start new branches from remote|local base")] = "remote",
-        remote: str = "origin", no_fetch: bool = False, dry_run: bool = False, root: Root = None, json_: Json = False):
+        remote: Annotated[str, typer.Option("--remote", help="Git remote to fetch and base on")] = "origin",
+        no_fetch: Annotated[bool, typer.Option("--no-fetch", help="Skip fetching the remote first")] = False,
+        dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would happen; change nothing")] = False, root: Root = None, json_: Json = False):
     """Create worktrees for TASK, one per repo."""
     if from_ not in ("remote", "local"):
         fail("--from must be 'remote' or 'local'")
@@ -306,7 +328,10 @@ def ls(task: Optional[str] = typer.Argument(None), root: Root = None, json_: Jso
 
 
 @app.command()
-def rm(task: str, repo: Repos = None, force: bool = False, delete_branch: bool = False, root: Root = None, json_: Json = False):
+def rm(task: Task, repo: RmRepos = None,
+       force: Annotated[bool, typer.Option("--force", help="Remove even with uncommitted changes")] = False,
+       delete_branch: Annotated[bool, typer.Option("--delete-branch", help="Also delete the task branch")] = False,
+       root: Root = None, json_: Json = False):
     """Remove worktrees of TASK (all, or only -r repos)."""
     tdir = task_dir(root, task)
     if not tdir.is_dir():

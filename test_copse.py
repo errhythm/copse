@@ -349,3 +349,19 @@ def test_ctrl_c_at_branch_stops_before_next_prompt(monkeypatch):
     with pytest.raises(typer.Exit):
         copse.pick_interactive({"api": None}, "1", None, None)
     assert asked == ["Branch"]
+
+
+def test_help_clean_and_version(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "200")
+    for cmd in ("new", "rm"):
+        out = CliRunner().invoke(app, [cmd, "--help"]).output
+        assert out and not any(b in out for b in ("--no-no-fetch", "--no-dry-run", "--no-json", "{task}"))
+    r = CliRunner().invoke(app, ["--version"])
+    assert r.exit_code == 0 and r.output.startswith("copse ")
+
+
+def test_error_text_not_emojified(tmp_path, monkeypatch):
+    # rich would turn ":b:" into an emoji without emoji=False
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(app, ["new", "1", "-r", "a:b:c:d"])
+    assert r.exit_code == 2 and "a:b:c:d" in r.output
