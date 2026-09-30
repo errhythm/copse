@@ -86,6 +86,7 @@ def test_remote_only_branch_tracked(ws):
     wt = ws / "tasks/1/api"
     up = subprocess.run(["git", "rev-parse", "--abbrev-ref", "@{u}"], cwd=wt, capture_output=True, text=True).stdout.strip()
     assert up == "origin/team/x"
+    assert cfg(ws / "api", "branch.team/x.merge") == "refs/heads/team/x"
 
 
 def test_global_flags_and_spec_override(ws):
@@ -365,3 +366,36 @@ def test_error_text_not_emojified(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(app, ["new", "1", "-r", "a:b:c:d"])
     assert r.exit_code == 2 and "a:b:c:d" in r.output
+
+
+def cfg(repo, key):
+    return subprocess.run(["git", "config", "--get", key], cwd=repo, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.mark.parametrize("frm", ["remote", "local"])
+def test_new_branch_upstream_is_same_name(ws, frm):
+    sh("git", "config", "push.default", "simple", cwd=ws / "api")
+    code, out = js("new", "1", "-b", "feature/pro-1", "--from", frm, "-r", "api")
+    wt = ws / "tasks/1/api"
+    assert code == 0 and out["results"][0]["status"] == "created"
+    assert cfg(ws / "api", "branch.feature/pro-1.merge") == "refs/heads/feature/pro-1"
+    assert cfg(ws / "api", "branch.feature/pro-1.remote") == "origin"
+    w = js("ls", "1")[1]["tasks"][0]["worktrees"][0]
+    assert (w["ahead"], w["behind"]) == (None, None)  # not pushed yet
+    sh("git", "push", cwd=wt)
+    sh("git", "rev-parse", "--verify", "origin/feature/pro-1", cwd=ws / "api")
+    w = js("ls", "1")[1]["tasks"][0]["worktrees"][0]
+    assert (w["ahead"], w["behind"]) == (0, 0)
+
+
+def test_no_remote_no_upstream(ws):
+    sh("git", "remote", "remove", "origin", cwd=ws / "api")
+    code, out = js("new", "1", "-b", "nr", "--base", "main", "--from", "local", "-r", "api")
+    assert code == 0 and out["results"][0]["status"] == "created"
+    assert cfg(ws / "api", "branch.nr.merge") == "" and cfg(ws / "api", "branch.nr.remote") == ""
+
+
+def test_attached_branch_config_untouched(ws):
+    sh("git", "branch", "mine", cwd=ws / "api")
+    js("new", "1", "-r", "api:mine")
+    assert cfg(ws / "api", "branch.mine.merge") == "" and cfg(ws / "api", "branch.mine.remote") == ""

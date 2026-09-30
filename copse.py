@@ -157,7 +157,7 @@ def resolve_and_add(repo, path, branch, base, remote, fetch, dry, task=None, fro
             start, ref = base, f"refs/heads/{base}"
         else:
             start = ref = base  # a sha or tag
-        cmd = ["worktree", "add", "-b", branch, str(path), ref]
+        cmd = ["worktree", "add", "--no-track", "-b", branch, str(path), ref]
         if git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=repo)[0]:
             r.update(status="failed", error=f"start ref '{start}' does not exist", start=start)
             return r
@@ -169,6 +169,10 @@ def resolve_and_add(repo, path, branch, base, remote, fetch, dry, task=None, fro
         r.update(status="failed", error=out)
     elif "-b" in cmd and task:  # mark branches copse created, so rm --delete-branch spares attached ones
         git("config", f"branch.{branch}.copseTask", task, cwd=repo)
+    if not rc and "--no-track" in cmd and git("remote", "get-url", remote, cwd=repo)[0] == 0:
+        # upstream = <remote>/<same name>, configured before the remote branch exists; ls shows null until the first push
+        git("config", f"branch.{branch}.remote", remote, cwd=repo)
+        git("config", f"branch.{branch}.merge", f"refs/heads/{branch}", cwd=repo)
     return r
 
 

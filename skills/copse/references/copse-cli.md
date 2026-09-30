@@ -52,7 +52,7 @@ Branch resolution per repo, first match wins:
 
 1. Local branch exists: reused (`git worktree add <path> <branch>`).
 2. `<remote>/<branch>` exists: local branch created with `--track`.
-3. Otherwise a new branch is cut from the base. A base `origin/x` always uses that remote ref. Else `--from remote` prefers `origin/<base>` then local `<base>`, and `--from local` uses local `<base>` first. A sha or tag also works.
+3. Otherwise a new branch is cut from the base with `--no-track`, then `branch.<name>.remote` and `branch.<name>.merge` are set so its upstream is `<remote>/<branch>` (same name, works before the remote branch exists). If the repo has no such remote, no upstream is set. A base `origin/x` always uses that remote ref. Else `--from remote` prefers `origin/<base>` then local `<base>`, and `--from local` uses local `<base>` first. A sha or tag also works.
 
 Branches copse creates in steps 2 and 3 get `branch.<name>.copseTask = <task>` in git config. `rm --delete-branch` uses it.
 
@@ -97,7 +97,7 @@ Unknown TASK exits 2. A missing root gives `{"tasks": []}`.
 ]}
 ```
 
-`dirty` is true when `git status --porcelain` prints anything. `ahead` and `behind` count against the upstream (`HEAD...@{u}`) and are `null` when there is no upstream.
+`dirty` is true when `git status --porcelain` prints anything. `ahead` and `behind` count against the upstream (`HEAD...@{u}`) and are `null` when `@{u}` does not resolve: no upstream, or the remote branch is not pushed yet. After the first `git push` they count unpushed and unpulled commits.
 
 ## copse rm TASK
 

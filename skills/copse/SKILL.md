@@ -106,7 +106,7 @@ copse ls 200 --json | jq -r '.tasks[].worktrees[] | "\(.repo)\t\(.branch)\tdirty
 copse ls --json | jq '[.tasks[].worktrees[] | select(.dirty)] | map(.repo)'
 ```
 
-`ahead` and `behind` count against the branch's upstream, and are `null` when it has none. A branch cut from `origin/<base>` tracks `origin/<base>` until you push it with `git push -u`, so its `ahead` counts commits not in the base, not unpushed commits. A branch cut from a local base has no upstream. Omit the task to list every task under the root.
+`ahead` and `behind` count against the branch's upstream, and are `null` when it has none or the remote branch is not pushed yet. A branch copse creates gets the upstream `<remote>/<branch>` (the same name, not the base), so both are `null` until the first push. After that they count unpushed and unpulled commits. A bare `git push` publishes the branch. A repo without the remote gets no upstream. Omit the task to list every task under the root.
 
 ### Remove one repo or the whole task
 

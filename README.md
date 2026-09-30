@@ -27,6 +27,7 @@ $ copse new 301
 - Sets branch and base per repo with `-r repo[:branch[:base]]`. Branch defaults to the task name.
 - Starts new branches from `origin/<base>` (the default) or from your local `<base>` with `--from local`, and fetches first unless you pass `--no-fetch`.
 - Reuses a local branch if it exists, and tracks a remote-only branch instead of cutting a new one.
+- Sets a new branch's upstream to `<remote>/<same name>`, so a bare `git push` publishes it.
 - Shows every worktree's branch, dirty state and ahead/behind counts with `copse ls`.
 - Removes worktrees with `copse rm`, and deletes a branch only if copse created it for that task.
 - Speaks JSON and exit codes for scripts. Without `-r` and without a TTY it exits 2 instead of prompting, and git never asks for credentials.
@@ -39,7 +40,7 @@ uv tool install copse          # or, from a clone: uv tool install -e .
 cd ~/code                      # a folder that contains your repos
 copse repos                    # see what it found
 copse new 200 -r api -r web    # tasks/200/api and tasks/200/web
-copse ls 200                   # branch, clean or dirty, ahead/behind
+copse ls 200                   # branch, clean or dirty, unpushed/unpulled counts
 copse rm 200 --delete-branch   # clean up when the task is done
 ```
 
@@ -98,7 +99,7 @@ For each repo, the first rule that matches wins.
 
 1. A local branch with that name exists. It is reused.
 2. `<remote>/<branch>` exists. A local branch is created that tracks it.
-3. Otherwise a new branch is cut from the base. A base written as `origin/x` always uses that remote ref, even with `--from local`. Otherwise `--from remote` uses `origin/<base>` when it exists and `--from local` uses `<base>`. A sha or tag also works.
+3. Otherwise a new branch is cut from the base. A base written as `origin/x` always uses that remote ref, even with `--from local`. Otherwise `--from remote` uses `origin/<base>` when it exists and `--from local` uses `<base>`. A sha or tag also works. The new branch's upstream is `<remote>/<branch>` (the same name, not the base), even before that branch exists on the remote. Until the first push, `copse ls` shows no ahead/behind. A bare `git push` publishes the branch. A repo without the remote gets no upstream.
 
 With no base given, copse uses what `<remote>/HEAD` points at, or the repo's current branch if there is none. Rerunning `new` marks worktrees that already exist as `exists`.
 
