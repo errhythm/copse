@@ -19,7 +19,7 @@ def git(*args, cwd, out=False):
 
 def copse(cwd, *args, env=None, stdin=""):
     base = {k: v for k, v in os.environ.items() if k != "COPSE_ROOT"}
-    e = {**base, **GIT_ENV, "PYTHONPATH": str(HERE), "PYTHONUTF8": "1", "NO_COLOR": "1", **(env or {})}
+    e = {**base, **GIT_ENV, "PYTHONPATH": str(HERE), "NO_COLOR": "1", **(env or {})}
     return subprocess.run([sys.executable, "-m", "copse", *args], cwd=cwd, input=stdin, capture_output=True, text=True, env=e)
 
 
@@ -74,6 +74,8 @@ def test_session(ws, tmp_path):
     (api / "scratch.txt").write_text("x")
     assert {x["repo"]: x["dirty"] for x in cj(ws, "ls", "200")["tasks"][0]["worktrees"]}["api"] is True
     assert "dirty" in copse(ws, "ls", "200").stdout
+    r = copse(ws, "ls", "200", env={"PYTHONIOENCODING": "cp1252"})  # Windows pipe encoding: ● must not raise
+    assert r.returncode == 0 and "dirty" in r.stdout, r.stderr
     (api / "scratch.txt").unlink()
 
     # web: commit -> ahead 1 after push -u sets upstream; then someone else pushes to auth -> behind 1
@@ -82,7 +84,7 @@ def test_session(ws, tmp_path):
     ws_ = {x["repo"]: x for x in cj(ws, "ls", "200")["tasks"][0]["worktrees"]}
     assert (ws_["web"]["ahead"], ws_["web"]["behind"]) == (1, 0)
     git("push", "-q", cwd=web)
-    assert cj(ws, "ls", "200")["tasks"][0]["worktrees"][2]["ahead"] == 0
+    assert {x["repo"]: x for x in cj(ws, "ls", "200")["tasks"][0]["worktrees"]}["web"]["ahead"] == 0
     other = tmp_path / "other"
     git("clone", "-q", "-b", "team/x", str(tmp_path / "auth.git"), str(other), cwd=tmp_path)
     git("commit", "-q", "--allow-empty", "-m", "theirs", cwd=other)

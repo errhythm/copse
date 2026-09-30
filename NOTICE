@@ -1,0 +1,11 @@
+copse
+Copyright 2026 Rhythm
+
+Parts of copse.py adapt patterns from these Apache-2.0 projects
+(https://www.apache.org/licenses/LICENSE-2.0); see the "adapted from"
+comments in the source:
+
+- Tracer-Cloud/opensre: https://github.com/Tracer-Cloud/opensre
+- TIGER-AI-Lab/ClawBench: https://github.com/TIGER-AI-Lab/ClawBench
+  ClawBench, Copyright 2026 ClawBench Authors
+- bentoml/OpenLLM: https://github.com/bentoml/OpenLLM

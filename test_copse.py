@@ -173,7 +173,9 @@ def test_bad_spec_exits_2(ws):
 
 def test_git_missing_is_failure_not_traceback(monkeypatch):
     import copse
-    monkeypatch.setenv("PATH", "")
+    def no_git(*a, **k):  # PATH="" is not enough on Windows: CreateProcess also searches cwd and system dirs
+        raise FileNotFoundError("git")
+    monkeypatch.setattr(copse.subprocess, "run", no_git)
     assert copse.git("status")[0] == 127
 
 

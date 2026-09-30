@@ -38,5 +38,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 include = ["copse.py"]
 
+[tool.hatch.build.targets.sdist]
+include = ["copse.py", "test_*.py", "README.md", "LICENSE", "NOTICE"]
+
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"

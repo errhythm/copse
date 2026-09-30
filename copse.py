@@ -13,6 +13,10 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+for _s in (sys.stdout, sys.stderr):  # a cp1252 pipe (Windows CI, redirects) must print "?" for ✔●◇, not raise UnicodeEncodeError
+    if _s and "utf" not in (getattr(_s, "encoding", "") or "").lower() and hasattr(_s, "reconfigure"):
+        _s.reconfigure(errors="replace")
+
 app = typer.Typer(add_completion=False, no_args_is_help=True, help=__doc__)
 Root = Annotated[Optional[Path], typer.Option("--root", envvar="COPSE_ROOT", help="Task root (default ./tasks)")]
 Json = Annotated[bool, typer.Option("--json", help="Machine-readable output")]
@@ -77,6 +81,13 @@ def emit(obj, as_json, render):
 
 def short(p):
     return str(p).replace(str(Path.home()), "~", 1)
+
+
+def rel(p):
+    try:
+        return os.path.relpath(p)
+    except ValueError:  # Windows: path on another drive than cwd
+        return p
 
 
 def status_line(r, detail, w=0):  # w: repo column width across the batch, so lines align
@@ -244,7 +255,7 @@ def new(task: str, repo: Repos = None, branch: Annotated[Optional[str], typer.Op
         r["repo"] = rid
         results.append(r)
         if not json_:
-            status_line(r, f"{r['branch']:{wb}}  {os.path.relpath(r['path'])}", wr)
+            status_line(r, f"{r['branch']:{wb}}  {rel(r['path'])}", wr)
     emit({"task": task, "path": str(tdir), "results": results}, json_, lambda: None)
     raise typer.Exit(1 if any(r["status"] == "failed" for r in results) else 0)
 
@@ -253,9 +264,9 @@ def worktrees(tdir: Path, scan_root: Path):
     for d in sorted(tdir.iterdir()):
         if d.is_dir() and (d / ".git").is_file():
             rc, common = git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=d)
-            main = Path(common).parent if rc == 0 else None
-            try:
-                rid = main.relative_to(scan_root).as_posix() if main else d.name  # posix: ids match scan() on Windows
+            main = Path(common).resolve().parent if rc == 0 else None
+            try:  # resolve both: Windows 8.3 short names (RUNNER~1) vs git's long paths
+                rid = main.relative_to(scan_root.resolve()).as_posix() if main else d.name  # posix: ids match scan() on Windows
             except ValueError:
                 rid = main.name
             yield d, main, rid
