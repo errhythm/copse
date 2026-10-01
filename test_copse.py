@@ -615,3 +615,141 @@ def test_notifies_keeps_exit_code(upd, code, shown, capsys):
     with pytest.raises(copse.typer.Exit) as e:
         cmd(json_=False)
     assert e.value.exit_code == code and ("available" in capsys.readouterr().err) == shown
+
+
+# --- .worktreeinclude, setup hook, merged ---
+def write(p, text):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+
+
+def inc_repo(ws):
+    api = ws / "api"
+    write(api / ".gitignore", ".env\n*.log\n")
+    write(api / ".worktreeinclude", ".env\nconf/*.log\nkeep.txt\ntracked.txt\n")
+    write(api / ".env", "secret")
+    write(api / "conf" / "a.log", "log")
+    write(api / "keep.txt", "not ignored")
+    write(api / "tracked.txt", "t")
+    sh("git", "add", "-f", "tracked.txt", ".gitignore", cwd=api)
+    sh("git", "commit", "-q", "-m", "c", cwd=api)
+    sh("git", "push", "-q", "origin", "main", cwd=api)
+    return api
+
+
+def test_include_copies_only_ignored(ws):
+    api = inc_repo(ws)
+    code, out = js("new", "1", "-r", "api")
+    wt = ws / "tasks" / "1" / "api"
+    assert code == 0 and sorted(out["results"][0]["copied"]) == [".env", "conf/a.log"]
+    assert (wt / ".env").read_text() == "secret" and (wt / "conf" / "a.log").is_file()
+    assert not (wt / "keep.txt").exists()  # matches the file but is not ignored
+    assert (wt / "tracked.txt").read_text() == "t"  # tracked: from checkout, not copied
+    assert "tracked.txt" not in out["results"][0]["copied"]
+
+
+def test_include_no_overwrite_and_skips_symlink(ws):
+    api = inc_repo(ws)
+    (api / "link.log").symlink_to(api / ".env")
+    write(api / ".worktreeinclude", ".env\nlink.log\n")
+    assert run("new", "1", "-r", "api", "--no-include").exit_code == 0
+    wt = ws / "tasks" / "1" / "api"
+    assert not (wt / ".env").exists()
+    # second run: worktree exists, nothing touched even without the flag
+    write(wt / ".env", "mine")
+    code, out = js("new", "1", "-r", "api")
+    assert out["results"][0]["status"] == "exists" and "copied" not in out["results"][0] and (wt / ".env").read_text() == "mine"
+    r = copse.copy_include(api, wt)  # direct: existing dest kept, symlink skipped
+    assert r == ([], []) and (wt / ".env").read_text() == "mine" and not (wt / "link.log").exists()
+
+
+def hook(ws, cmd):
+    sh("git", "config", "copse.setup", cmd, cwd=ws / "api")
+
+
+def test_setup_hook_env_and_ok(ws):
+    hook(ws, 'printf "$COPSE_TASK|$COPSE_REPO|$COPSE_MAIN|$PWD" > hook.out')
+    code, out = js("new", "7", "-r", "api")
+    wt = ws / "tasks" / "7" / "api"
+    assert code == 0 and out["results"][0]["setup"] == "ok"
+    t, rid, main, cwd = (wt / "hook.out").read_text().split("|")
+    assert (t, rid, main) == ("7", "api", str(ws / "api")) and Path(cwd).resolve() == wt.resolve()
+
+
+def test_setup_failure_exit1_and_no_setup(ws):
+    hook(ws, "echo boom >&2; exit 3")
+    code, out = js("new", "7", "-r", "api", "-r", "web")
+    api, web = out["results"]
+    assert code == 1 and api["setup"] == "failed" and "boom" in api["error"] and "setup" not in web
+    code, out = js("new", "8", "-r", "api", "--no-setup")
+    assert code == 0 and "setup" not in out["results"][0]
+
+
+def test_setup_script_file_and_dry_run(ws):
+    s = ws / "api" / ".copse" / "setup"
+    write(s, "#!/bin/sh\ntouch ran\n")
+    s.chmod(0o755)
+    assert js("new", "9", "-r", "api", "--dry-run")[1]["results"][0].get("setup") is None
+    code, out = js("new", "9", "-r", "api")
+    assert out["results"][0]["setup"] == "ok" and (ws / "tasks" / "9" / "api" / "ran").exists()
+
+
+def ls_merged():
+    return js("ls", "5")[1]["tasks"][0]["worktrees"][0]["merged"]
+
+
+def commit_in(wt, name):
+    write(wt / name, name)
+    sh("git", "add", name, cwd=wt)
+    sh("git", "commit", "-q", "-m", name, cwd=wt)
+
+
+def test_merged_states(ws):
+    api = ws / "api"
+    assert js("new", "5", "-r", "api")[0] == 0
+    wt = ws / "tasks" / "5" / "api"
+    assert ls_merged() is False  # fresh
+    commit_in(wt, "f")
+    assert ls_merged() is False  # unmerged commit
+    sh("git", "merge", "-q", "--no-ff", "-m", "m", "5", cwd=api)
+    sh("git", "push", "-q", "origin", "main", cwd=api)
+    assert ls_merged() is True
+
+
+def test_merged_squash_and_fresh_behind(ws):
+    api = ws / "api"
+    assert js("new", "5", "-r", "api")[0] == 0
+    wt = ws / "tasks" / "5" / "api"
+    sh("git", "commit", "-q", "--allow-empty", "-m", "x", cwd=api)
+    sh("git", "push", "-q", "origin", "main", cwd=api)
+    assert ls_merged() is False  # fresh branch, base moved on
+    commit_in(wt, "f")
+    commit_in(wt, "g")  # two commits: a squash only matches their combined diff
+    sh("git", "merge", "-q", "--squash", "5", cwd=api)
+    sh("git", "commit", "-q", "-m", "sq", cwd=api)
+    sh("git", "push", "-q", "origin", "main", cwd=api)
+    assert ls_merged() is True
+
+
+def test_merged_null_without_origin_head(ws):
+    assert js("new", "5", "-r", "api")[0] == 0
+    sh("git", "remote", "set-head", "origin", "-d", cwd=ws / "api")
+    assert ls_merged() is False  # still has its recorded base
+    sh("git", "config", "--unset", "branch.5.copseBase", cwd=ws / "api")
+    assert ls_merged() is None
+
+
+def test_merged_uses_own_base(ws):
+    api = ws / "api"
+    assert js("new", "5", "-r", "api:5:develop")[0] == 0
+    wt = ws / "tasks" / "5" / "api"
+    commit_in(wt, "f")
+    sh("git", "push", "-q", "origin", "5:develop", cwd=wt)
+    sh("git", "fetch", "-q", "origin", cwd=api)
+    assert ls_merged() is True  # merged into develop, not main
+
+
+def test_setup_background_child_does_not_hang(ws):
+    hook(ws, "sleep 30 & echo started")
+    t = time.monotonic()
+    assert js("new", "7", "-r", "api")[1]["results"][0]["setup"] == "ok" and time.monotonic() - t < 20

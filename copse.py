@@ -2,8 +2,10 @@
 import functools
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from contextlib import nullcontext
@@ -174,11 +176,56 @@ def resolve_and_add(repo, path, branch, base, remote, fetch, dry, task=None, fro
         r.update(status="failed", error=out)
     elif "-b" in cmd and task:  # mark branches copse created, so rm --delete-branch spares attached ones
         git("config", f"branch.{branch}.copseTask", task, cwd=repo)
+        if cmd[-1].startswith("refs/"):  # the base it was cut from, for ls `merged` (a sha/tag base falls back to origin/HEAD)
+            git("config", f"branch.{branch}.copseBase", cmd[-1], cwd=repo)
     if not rc and "--no-track" in cmd and git("remote", "get-url", remote, cwd=repo)[0] == 0:
         # upstream = <remote>/<same name>, configured before the remote branch exists; ls shows null until the first push
         git("config", f"branch.{branch}.remote", remote, cwd=repo)
         git("config", f"branch.{branch}.merge", f"refs/heads/{branch}", cwd=repo)
     return r
+
+
+def copy_include(main, path):
+    """Copy gitignored files matching <main>/.worktreeinclude into the new worktree: (copied, errors). Never overwrites, skips symlinks."""
+    inc, main = Path(main) / ".worktreeinclude", Path(main)
+    if not inc.is_file():
+        return [], []
+    def lsf(*a):
+        rc, o = git("ls-files", "-z", "--others", "--ignored", *a, cwd=main)
+        return set() if rc else set(o.split("\0")) - {""}  # a git error is not a file list
+    copied, errors = [], []
+    for f in sorted(lsf("--exclude-standard") & lsf(f"--exclude-from={inc}")):  # --exclude-from alone ignores .gitignore, so intersect: ignored AND listed
+        s, d = main / f, path / f
+        if s.is_symlink() or os.path.lexists(d):
+            continue
+        try:
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(s, d)
+            copied.append(f)
+        except OSError as e:
+            errors.append(f"{f}: {e}")
+    return copied, errors
+
+
+def run_setup(main, path, task, rid):
+    """Run the setup hook (git config copse.setup, else executable .copse/setup) in the worktree: None if no hook, else (ok, error tail)."""
+    cmd, script = git("config", "--get", "copse.setup", cwd=main), Path(main) / ".copse" / "setup"
+    if cmd[0] == 0 and cmd[1]:
+        argv, shell = cmd[1], True
+    elif script.is_file() and os.access(script, os.X_OK):
+        argv, shell = [str(script)], False
+    else:
+        return None
+    # stdin=DEVNULL: a hook that reads stdin must not hang; output to a file, not a pipe, so a backgrounded child holding it can't either
+    with tempfile.TemporaryFile() as log:
+        try:
+            p = subprocess.run(argv, cwd=path, shell=shell, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                               env={**os.environ, "COPSE_TASK": task, "COPSE_REPO": rid, "COPSE_MAIN": str(main)})
+        except OSError as e:
+            return False, str(e)
+        log.seek(0)
+        tail = log.read().decode(errors="replace").strip()[-300:]
+    return p.returncode == 0, ("" if p.returncode == 0 else f"setup exited {p.returncode}: {tail}")
 
 
 # adapted from tconbeer/harlequin (MIT) and ClawBench (Apache-2.0): one module-level questionary Style, accent + dim hints
@@ -410,6 +457,8 @@ def new(task: Task, repo: Repos = None, branch: Annotated[Optional[str], typer.O
         from_: Annotated[str, typer.Option("--from", help="Start new branches from remote|local base")] = "remote",
         remote: Annotated[str, typer.Option("--remote", help="Git remote to fetch and base on")] = "origin",
         no_fetch: Annotated[bool, typer.Option("--no-fetch", help="Skip fetching the remote first")] = False,
+        no_include: Annotated[bool, typer.Option("--no-include", help="Don't copy .worktreeinclude files into new worktrees")] = False,
+        no_setup: Annotated[bool, typer.Option("--no-setup", help="Don't run the setup hook (copse.setup / .copse/setup)")] = False,
         dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would happen; change nothing")] = False, root: Root = None, json_: Json = False):
     """Create worktrees for TASK, one per repo."""
     if from_ not in ("remote", "local"):
@@ -444,11 +493,23 @@ def new(task: Task, repo: Repos = None, branch: Annotated[Optional[str], typer.O
         with out.status(f"{rid}...") if not json_ else nullcontext():  # spinner only on a TTY, never in --json
             r = resolve_and_add(found[rid], path, b, ba, remote, not no_fetch, dry_run, task, from_)
         r["repo"] = rid
+        extra = ""
+        if r["status"] == "created" and not dry_run:  # only fresh worktrees: never touch an existing one
+            if not no_include:
+                r["copied"], errs = copy_include(found[rid], path)
+                r["include_errors"] = errs
+                extra += f"  +{len(r['copied'])} copied" + (f", {len(errs)} failed" if errs else "")
+            hook = None if no_setup else run_setup(found[rid], path, task, rid)
+            if hook:
+                r["setup"] = "ok" if hook[0] else "failed"
+                if not hook[0]:
+                    r["error"] = hook[1]
+                extra += f"  setup {r['setup']}"
         results.append(r)
         if not json_:
-            status_line(r, f"{r['branch']:{wb}}  {rel(r['path'])}", wr)
+            status_line(r, f"{r['branch']:{wb}}  {rel(r['path'])}{extra}", wr)
     emit({"task": task, "path": str(tdir), "results": results}, json_, lambda: None)
-    raise typer.Exit(1 if any(r["status"] == "failed" for r in results) else 0)
+    raise typer.Exit(1 if any(r["status"] == "failed" or r.get("setup") == "failed" for r in results) else 0)
 
 
 def worktrees(tdir: Path, scan_root: Path):
@@ -463,9 +524,34 @@ def worktrees(tdir: Path, scan_root: Path):
             yield d, main, rid
 
 
+def merged(d, branch):
+    """True when the branch's work is in its base (the ref copse cut it from, else <remote>/HEAD): ancestor, or squash-merged. False for
+    an untouched branch (its reflog is only "Created from <base>"); None without a base or on a detached HEAD."""
+    if branch == "HEAD":
+        return None
+    rc, base = git("config", "--get", f"branch.{branch}.copseBase", cwd=d)
+    if rc:
+        remote = git("config", "--get", f"branch.{branch}.remote", cwd=d)[1] or "origin"
+        rc, base = git("symbolic-ref", f"refs/remotes/{remote}/HEAD", cwd=d)
+    if rc or git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", cwd=d)[0]:
+        return None
+    # ponytail: a fresh branch (at or behind its base) looks merged; its reflog tells it apart. With core.logAllRefUpdates off it reads true.
+    # No "HEAD == base tip" shortcut: a fast-forward merge lands there too.
+    if git("reflog", "show", "--format=%gs", f"refs/heads/{branch}", cwd=d)[1] == f"branch: Created from {base}":
+        return False
+    if git("merge-base", "--is-ancestor", "HEAD", base, cwd=d)[0] == 0:
+        return True
+    # squash: one synthetic commit of the whole branch diff (dangling object, as git-delete-squashed does), then `git cherry` it
+    rc, mb = git("merge-base", base, "HEAD", cwd=d)
+    if rc == 0:
+        rc, mb = git("-c", "user.name=copse", "-c", "user.email=copse@localhost", "commit-tree", "HEAD^{tree}", "-p", mb, "-m", "copse", cwd=d)
+    return rc == 0 and git("cherry", base, mb, cwd=d)[1].startswith("-")
+
+
 def info(d, main, rid):
     w = {"repo": rid, "path": str(d), "branch": git("rev-parse", "--abbrev-ref", "HEAD", cwd=d)[1],
          "dirty": bool(git("status", "--porcelain", cwd=d)[1]), "ahead": None, "behind": None}
+    w["merged"] = merged(d, w["branch"])
     # adapted from nesquena/hermes-webui (MIT): HEAD...@{u} left/right counts
     rc, out = git("rev-list", "--left-right", "--count", "HEAD...@{u}", cwd=d)
     if rc == 0:
@@ -476,7 +562,7 @@ def info(d, main, rid):
 @app.command()
 @notifies
 def ls(task: Optional[str] = typer.Argument(None), root: Root = None, json_: Json = False):
-    """Show worktrees per task: branch, dirty, ahead/behind."""
+    """Show worktrees per task: branch, dirty, ahead/behind, merged."""
     troot = task_root(root)
     if task and not task_dir(root, task).is_dir():
         fail(f"no such task '{task}'")
@@ -492,6 +578,7 @@ def ls(task: Optional[str] = typer.Argument(None), root: Root = None, json_: Jso
                 tb.add_column(c)
             for w in t["worktrees"]:
                 sync = " ".join(x for x in (w["ahead"] and f"↑{w['ahead']}", w["behind"] and f"↓{w['behind']}") if x) or "[dim]-[/]"
+                sync += " [magenta]merged[/]" if w["merged"] else ""
                 tb.add_row(escape(w["repo"]), f"[cyan]{escape(w['branch'])}[/]", "[yellow]●[/] dirty" if w["dirty"] else "[green]✔[/] clean", sync)
             out.print(tb)
     emit({"tasks": tasks}, json_, render)

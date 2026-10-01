@@ -52,9 +52,16 @@ Create one worktree per repo at `<root>/<TASK>/<repo>`. TASK must be a plain nam
 | `--from remote\|local` | `remote` | Cut new branches from `<remote>/<base>` or from local `<base>`. Anything else exits 2. |
 | `--remote` | `origin` | Remote to fetch and track. |
 | `--no-fetch` | off | Skip `git fetch <remote>`. |
-| `--dry-run` | off | Resolve and report the plan. Creates nothing, does not fetch. |
+| `--no-include` | off | Skip copying `.worktreeinclude` files. |
+| `--no-setup` | off | Skip the setup hook. |
+| `--dry-run` | off | Resolve and report the plan. Creates nothing, does not fetch, copies nothing, runs no hook. |
 | `--root` | `./tasks` (env `COPSE_ROOT`) | Where task folders live. |
 | `--json` | off | Machine-readable output. |
+
+Only newly created worktrees get the next two steps (never `exists`):
+
+- `.worktreeinclude`: if the main checkout has one (gitignore syntax), files that are gitignored and match it are copied into the new worktree. Tracked, non-ignored and symlinked files are skipped, existing files are never overwritten, mode is kept. Result: `copied` (relative paths) and `include_errors` (per-file messages; they do not change the exit code).
+- Setup hook, run after the copy with the worktree as cwd and stdin closed: `git config copse.setup` (a shell string, repo or global), else an executable `.copse/setup` in the main checkout. Env: `COPSE_TASK`, `COPSE_REPO`, `COPSE_MAIN`. Result: `setup` is `"ok"` or `"failed"` (with the output tail in `error`, and exit 1); the key is absent when there is no hook.
 
 Branch resolution per repo, first match wins:
 
@@ -100,12 +107,14 @@ Unknown TASK exits 2. A missing root gives `{"tasks": []}`.
   {"task": "200", "path": "/home/me/code/tasks/200",
    "worktrees": [
      {"repo": "api", "path": "/home/me/code/tasks/200/api", "branch": "200",
-      "dirty": false, "ahead": 1, "behind": 0}
+      "dirty": false, "ahead": 1, "behind": 0, "merged": false}
    ]}
 ]}
 ```
 
 `dirty` is true when `git status --porcelain` prints anything. `ahead` and `behind` count against the upstream (`HEAD...@{u}`) and are `null` when `@{u}` does not resolve: no upstream, or the remote branch is not pushed yet. After the first `git push` they count unpushed and unpulled commits.
+
+`merged` compares HEAD with its base: the ref copse cut the branch from (`branch.<name>.copseBase`), else `<remote>/HEAD` (remote from the branch's upstream, default `origin`). `true` if HEAD is an ancestor of the base, or the branch's whole diff was squash-merged (`git cherry` on a synthetic squash commit); `false` if not, or if the branch is untouched (its reflog is only "Created from <base>"); `null` without a base or on a detached HEAD. The table shows a `merged` tag in the sync column.
 
 ## copse rm TASK
 

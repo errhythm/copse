@@ -71,6 +71,10 @@ copse new 200 -r api:feat/200:develop -r web --base main --json
 
 New branches start from `origin/<base>` by default, after a `git fetch`. Pass `--from local` to start from the local `<base>` instead. Pass `--no-fetch` to skip the fetch (offline, or fetch already done). `--remote upstream` swaps the remote.
 
+### Copy local files and run setup
+
+Each newly created worktree gets, in order: (1) gitignored files matching `<repo>/.worktreeinclude` (e.g. `.env`), copied from the main checkout, never overwriting, listed in `copied`; (2) the setup hook, `git config copse.setup "<shell cmd>"` or an executable `<repo>/.copse/setup`, run in the worktree with `COPSE_TASK`, `COPSE_REPO`, `COPSE_MAIN` set. `setup` is `"ok"` or `"failed"` (output tail in `error`, exit 1) and absent without a hook. `--no-include` and `--no-setup` skip them. Existing worktrees are never touched.
+
 ```bash
 copse new 200 --from local -r api -r web:200:origin/main --json
 ```
@@ -108,7 +112,7 @@ copse ls 200 --json | jq -r '.tasks[].worktrees[] | "\(.repo)\t\(.branch)\tdirty
 copse ls --json | jq '[.tasks[].worktrees[] | select(.dirty)] | map(.repo)'
 ```
 
-`ahead` and `behind` count against the branch's upstream, and are `null` when it has none or the remote branch is not pushed yet. A branch copse creates gets the upstream `<remote>/<branch>` (the same name, not the base), so both are `null` until the first push. After that they count unpushed and unpulled commits. A bare `git push` publishes the branch. A repo without the remote gets no upstream. Omit the task to list every task under the root.
+`ahead` and `behind` count against the branch's upstream, and are `null` when it has none or the remote branch is not pushed yet. A branch copse creates gets the upstream `<remote>/<branch>` (the same name, not the base), so both are `null` until the first push. After that they count unpushed and unpulled commits. A bare `git push` publishes the branch. A repo without the remote gets no upstream. `merged` is `true` when the branch's commits are now in the base copse cut it from (else `<remote>/HEAD`), by regular, fast-forward or squash merge; `false` if not or untouched; `null` if unknown. Omit the task to list every task under the root.
 
 ### Remove one repo or the whole task
 
