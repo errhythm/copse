@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 import copse
 from copse import app
 
+posix_hook = pytest.mark.skipif(sys.platform == "win32", reason="hooks here are POSIX shell; Windows runs copse.setup in cmd.exe")
+
 ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
        "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "init.defaultBranch", "GIT_CONFIG_VALUE_0": "main"}
 
@@ -667,6 +669,7 @@ def hook(ws, cmd):
     sh("git", "config", "copse.setup", cmd, cwd=ws / "api")
 
 
+@posix_hook
 def test_setup_hook_env_and_ok(ws):
     hook(ws, 'printf "$COPSE_TASK|$COPSE_REPO|$COPSE_MAIN|$PWD" > hook.out')
     code, out = js("new", "7", "-r", "api")
@@ -676,6 +679,7 @@ def test_setup_hook_env_and_ok(ws):
     assert (t, rid, main) == ("7", "api", str(ws / "api")) and Path(cwd).resolve() == wt.resolve()
 
 
+@posix_hook
 def test_setup_failure_exit1_and_no_setup(ws):
     hook(ws, "echo boom >&2; exit 3")
     code, out = js("new", "7", "-r", "api", "-r", "web")
@@ -685,6 +689,7 @@ def test_setup_failure_exit1_and_no_setup(ws):
     assert code == 0 and "setup" not in out["results"][0]
 
 
+@posix_hook
 def test_setup_script_file_and_dry_run(ws):
     s = ws / "api" / ".copse" / "setup"
     write(s, "#!/bin/sh\ntouch ran\n")
@@ -749,6 +754,7 @@ def test_merged_uses_own_base(ws):
     assert ls_merged() is True  # merged into develop, not main
 
 
+@posix_hook
 def test_setup_background_child_does_not_hang(ws):
     hook(ws, "sleep 30 & echo started")
     t = time.monotonic()

@@ -148,6 +148,8 @@ Both steps run in `copse new`, after each worktree is created, and both read fro
 | `COPSE_REPO` | Repo id. |
 | `COPSE_MAIN` | Path of the repo's main checkout. |
 
+On Windows, `copse.setup` runs in `cmd.exe` and a `.copse/setup` script can't run, so set a `cmd` command there.
+
 If the hook fails, the result gets `"setup": "failed"` in JSON and `copse new` exits 1. Pass `--no-setup` to skip.
 
 ```bash
